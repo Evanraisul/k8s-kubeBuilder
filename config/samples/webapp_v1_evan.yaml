@@ -1,0 +1,12 @@
+apiVersion: webapp.my.domain.com/v1
+kind: Evan
+metadata:
+  labels:
+    app.kubernetes.io/name: evan
+    app.kubernetes.io/instance: evan-sample
+    app.kubernetes.io/part-of: k8s-kubebuilder
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: k8s-kubebuilder
+  name: evan-sample
+spec:
+  # TODO(user): Add fields here

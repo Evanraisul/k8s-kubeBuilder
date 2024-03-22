@@ -1,0 +1,27 @@
+# permissions for end users to view evans.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: evan-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: k8s-kubebuilder
+    app.kubernetes.io/part-of: k8s-kubebuilder
+    app.kubernetes.io/managed-by: kustomize
+  name: evan-viewer-role
+rules:
+- apiGroups:
+  - webapp.my.domain.com
+  resources:
+  - evans
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - webapp.my.domain.com
+  resources:
+  - evans/status
+  verbs:
+  - get
