@@ -24,7 +24,18 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+//+kubebuilder:object:root=true
+//+kubebuilder:subresource:status
+
+// Evan is the Schema for the evans API
 // +kubebuilder:printcolumn:name="AvailableReplicas",type="integer",JSONPath=".status.availableReplicas"
+type Evan struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   EvanSpec   `json:"spec,omitempty"`
+	Status EvanStatus `json:"status,omitempty"`
+}
 
 type DeploymentConfig struct {
 	// +optional
@@ -69,18 +80,6 @@ type EvanStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	AvailableReplicas int32 `json:"availableReplicas"`
-}
-
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
-
-// Evan is the Schema for the evans API
-type Evan struct {
-	metav1.TypeMeta   `json:",inline,omitempty"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   EvanSpec   `json:"spec,omitempty"`
-	Status EvanStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true

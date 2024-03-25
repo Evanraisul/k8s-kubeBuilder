@@ -14,7 +14,11 @@ spec:
     singular: evan
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .status.availableReplicas
+      name: AvailableReplicas
+      type: integer
+    name: v1
     schema:
       openAPIV3Schema:
         description: Evan is the Schema for the evans API

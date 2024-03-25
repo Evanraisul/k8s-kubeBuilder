@@ -12,9 +12,9 @@ spec:
   # TODO(user): Add fields here
   deploymentConfig:
     name: evan
-    replicas: 3
+    replicas: 2
     image: evanraisul/book-api
   serviceConfig:
     type: NodePort
     port: 4444
-  deletionPolicy: WipeOut
+  deletionPolicy: Delete

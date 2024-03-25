@@ -63,40 +63,36 @@ func generateDeploymentName(evanName string, evanDeploymentName string, resource
 	return deploymentName
 }
 func generateServiceName(evanName string, evanServiceName string, resourceCreationTimestamp int64) string {
-	deploymentName := fmt.Sprintf("%s-%s-%s", evanName, evanServiceName, strconv.FormatInt(resourceCreationTimestamp, 10))
+	serviceName := fmt.Sprintf("%s-%s-%s", evanName, evanServiceName, strconv.FormatInt(resourceCreationTimestamp, 10))
 	if evanServiceName == "" {
-		deploymentName = fmt.Sprintf("%s-%s", evanName, strconv.FormatInt(resourceCreationTimestamp, 10))
+		serviceName = fmt.Sprintf("%s-%s", evanName, strconv.FormatInt(resourceCreationTimestamp, 10))
 	}
-	return deploymentName
+	return serviceName
 }
 
-func isReplicasChanged(evanReplicas int32, deploymentReplicas int32) bool {
-	if evanReplicas != 0 && evanReplicas != deploymentReplicas {
+func isDeploymentConfigChanged(evanReplicas int32, evanDeploymentName string, evanDeploymentImage string, currentDeployment *appsv1.Deployment) bool {
+	if evanReplicas != 0 && evanReplicas != *currentDeployment.Spec.Replicas {
+		*currentDeployment.Spec.Replicas = evanReplicas
 		return true
 	}
-	return false
-}
-func isDeploymentNameChanged(evanDeploymentName string, deploymentName string) bool {
-	if evanDeploymentName != "" && evanDeploymentName != deploymentName {
+	if evanDeploymentName != "" && evanDeploymentName != currentDeployment.Name {
+		currentDeployment.Name = evanDeploymentName
 		return true
 	}
-	return false
-}
-func isDeploymentImageChanged(evanDeploymentImage string, deploymentImage string) bool {
-	if evanDeploymentImage != "" && evanDeploymentImage != deploymentImage {
+	if evanDeploymentImage != "" && evanDeploymentImage != currentDeployment.Spec.Template.Spec.Containers[0].Image {
+		currentDeployment.Spec.Template.Spec.Containers[0].Image = evanDeploymentImage
 		return true
 	}
 	return false
 }
 
-func isServiceNameChanged(evanServiceName string, serviceName string) bool {
-	if evanServiceName != "" && evanServiceName != serviceName {
+func isServiceConfigChanged(evanServiceName string, evanServicePort int32, currentService *corev1.Service) bool {
+	if evanServiceName != "" && evanServiceName != currentService.Name {
+		currentService.Name = evanServiceName
 		return true
 	}
-	return false
-}
-func isServicePortChanged(evanServicePort int32, servicePort int32) bool {
-	if evanServicePort != 0 && evanServicePort != servicePort {
+	if evanServicePort != 0 && evanServicePort != currentService.Spec.Ports[0].Port {
+		currentService.Spec.Ports[0].Port = evanServicePort
 		return true
 	}
 	return false
@@ -133,6 +129,8 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		updateDeployment.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
 			*metav1.NewControllerRef(&evan, webappv1.GroupVersion.WithKind("Evan")),
 		}
+	} else {
+		updateDeployment.ObjectMeta.OwnerReferences = nil
 	}
 
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: deploymentName}, updateDeployment); err != nil {
@@ -148,34 +146,13 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// If this number of the replicas on the Evan resource is specified, and the
-	// number does not equal the current desired replicas on the Deployment, we
-	// should update the Deployment resource.
-	if isReplicasChanged(*evan.Spec.DeploymentConfig.Replicas, *updateDeployment.Spec.Replicas) {
+	// If deployment config changed, then update the Deployment.
+	replicas := evan.Spec.DeploymentConfig.Replicas
+	image := evan.Spec.DeploymentConfig.Image
+	if isDeploymentConfigChanged(*replicas, deploymentName, image, updateDeployment) {
 		log.Log.Info("Deployment Replica mis-match... Updating")
-		updateDeployment.Spec.Replicas = evan.Spec.DeploymentConfig.Replicas
 		if err := r.Client.Update(ctx, updateDeployment); err != nil {
 			log.Log.Info("Error Updating Deployment")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		log.Log.Info("Deployment Updated.")
-	}
-	// If Deployment Name Change ------------------------------------------------
-	if isDeploymentNameChanged(deploymentName, updateDeployment.ObjectMeta.Name) {
-		log.Log.Info("Deployment Name changed... Updating")
-		updateDeployment.ObjectMeta.Name = deploymentName
-		if err := r.Client.Update(ctx, updateDeployment); err != nil {
-			log.Log.Error(err, "Error Updating Deployment")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		log.Log.Info("Deployment Updated.")
-	}
-	// If Deployment Image Change ------------------------------------------------
-	if isDeploymentImageChanged(evan.Spec.DeploymentConfig.Image, updateDeployment.Spec.Template.Spec.Containers[0].Image) {
-		log.Log.Info("Deployment Image changed... Updating")
-		updateDeployment.Spec.Template.Spec.Containers[0].Image = evan.Spec.DeploymentConfig.Image
-		if err := r.Client.Update(ctx, updateDeployment); err != nil {
-			log.Log.Error(err, "Error Updating Deployment")
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		log.Log.Info("Deployment Updated.")
@@ -188,7 +165,8 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	servicePort := evan.Spec.ServiceConfig.Port
 	if servicePort == 0 {
 		log.Log.Info("Service Port is not provided by user")
-		return ctrl.Result{}, nil
+		err := fmt.Errorf("Service Port is not provided by user")
+		return ctrl.Result{}, err
 	}
 
 	// If TargetPort is not defined by User, set the TargetPort as same as Port
@@ -203,8 +181,10 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		updateService.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
 			*metav1.NewControllerRef(&evan, webappv1.GroupVersion.WithKind("Evan")),
 		}
+	} else {
+		updateService.ObjectMeta.OwnerReferences = nil
 	}
-	// fmt.Println("Evan ..")
+	fmt.Println("Evan")
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: serviceName}, updateService); err != nil {
 		if errors.IsNotFound(err) {
 			log.Log.Info("Could not find existing Service")
@@ -217,37 +197,45 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		//		log.Log.Error(err, "Error fetching Service")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	// fmt.Println("Evan ...")
+	fmt.Println("Evan..")
 
-	// If Service Name Change, update the service
-	if isServiceNameChanged(serviceName, updateService.ObjectMeta.Name) {
-		log.Log.Info("Service Name changed... Updating")
-		updateService.ObjectMeta.Name = serviceName
+	// If ServiceConfig changes, update the service
+	if isServiceConfigChanged(serviceName, servicePort, updateService) {
+		log.Log.Info("Service Config changed... Updating")
 		if err := r.Client.Update(ctx, updateService); err != nil {
 			log.Log.Error(err, "Error Updating Service")
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-		log.Log.Info("Service Updated.")
-	}
-	// If Service Port Change, update the service
-	if isServicePortChanged(servicePort, updateService.Spec.Ports[0].Port) {
-		log.Log.Info("Service Port changed... Updating")
-		updateService.Spec.Ports[0].Port = servicePort
-		if err := r.Client.Update(ctx, updateService); err != nil {
-			log.Log.Error(err, "Error Updating Service")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		log.Log.Info("Service Updated.")
+		log.Log.Info("Service Updated Successfully.")
 	}
 
+	// Update the Status of the Evan
+	err := r.updateevan(ctx, &evan, updateDeployment)
+	if err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 	return ctrl.Result{}, nil
+}
+
+func (r *EvanReconciler) updateevan(ctx context.Context, Evan *webappv1.Evan, deployment *appsv1.Deployment) error {
+	// NEVER modify objects from the store. It's a read-only, local cache.
+	// You can use DeepCopy() to make a deep copy of original object and modify this copy
+	// Or create a copy manually for better performance
+	EvanCopy := Evan.DeepCopy()
+	EvanCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
+	// If the CustomResourceSubresources feature gate is not enabled,
+	// we must use Update instead of UpdateStatus to update the Status block of the Evan resource.
+	// UpdateStatus will not allow changes to the Spec of the resource,
+	// which is ideal for ensuring nothing other than resource status has been updated.
+	err := r.Client.Status().Update(ctx, EvanCopy)
+	return err
 }
 
 var (
 	deployOwnerKey = ".metadata.controller"
 	svcOwnerKey    = ".metadata.controller"
 	apiGVStr       = webappv1.GroupVersion.String()
-	ourKind        = "CustomCrd"
+	ourKind        = "Evan"
 )
 
 // SetupWithManager sets up the controller with the Manager.
