@@ -50,8 +50,6 @@ spec:
                   replicas:
                     format: int32
                     type: integer
-                required:
-                - image
                 type: object
               serviceConfig:
                 properties:

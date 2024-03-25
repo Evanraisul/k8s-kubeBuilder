@@ -117,7 +117,7 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// below).
 	var evan webappv1.Evan
 	if err := r.Get(ctx, req.NamespacedName, &evan); err != nil {
-		log.Log.Error(err, "Unable to get Evan")
+		log.Log.Info("Unable to get Evan")
 		// we'll ignore not-found errors, since they can't be fixed by an immediate requeue
 		// (Need to wait for a new notification), and we can get them on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -137,14 +137,14 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: deploymentName}, updateDeployment); err != nil {
 		if errors.IsNotFound(err) {
-			log.Log.Error(err, "Could not find existing deployment")
+			log.Log.Info("Could not find existing deployment")
 			if err := r.Client.Create(ctx, updateDeployment); err != nil {
-				log.Log.Error(err, "Error while creating deployment")
+				log.Log.Info("Error while creating deployment")
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
-			log.Log.Error(err, "Deployment Created")
+			log.Log.Info("Deployment Created")
 		}
-		log.Log.Error(err, "Error fetching deployment")
+		//log.Log.Error(err, "Error fetching deployment")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -155,7 +155,7 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.Log.Info("Deployment Replica mis-match... Updating")
 		updateDeployment.Spec.Replicas = evan.Spec.DeploymentConfig.Replicas
 		if err := r.Client.Update(ctx, updateDeployment); err != nil {
-			log.Log.Error(err, "Error Updating Deployment")
+			log.Log.Info("Error Updating Deployment")
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		log.Log.Info("Deployment Updated.")
@@ -204,19 +204,20 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			*metav1.NewControllerRef(&evan, webappv1.GroupVersion.WithKind("Evan")),
 		}
 	}
-
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: deploymentName}, updateService); err != nil {
+	// fmt.Println("Evan ..")
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: serviceName}, updateService); err != nil {
 		if errors.IsNotFound(err) {
-			log.Log.Error(err, "Could not find existing Service")
+			log.Log.Info("Could not find existing Service")
 			if err := r.Client.Create(ctx, updateService); err != nil {
 				log.Log.Error(err, "Error while creating Service")
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
-			log.Log.Error(err, "Service Created")
+			log.Log.Info("Service Created")
 		}
-		log.Log.Error(err, "Error fetching Service")
+		//		log.Log.Error(err, "Error fetching Service")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// fmt.Println("Evan ...")
 
 	// If Service Name Change, update the service
 	if isServiceNameChanged(serviceName, updateService.ObjectMeta.Name) {
@@ -291,17 +292,54 @@ func (r *EvanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Watches and Custom EventHandler
-	/* handleForDeployment := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, object client.Object) []reconcile.Request {
-		var req []reconcile.Request
-		// List all Custom Resource
-		customResources := &webappv1.EvanList{}
-		if err := r.List(context.Background(), customResources); err != nil {
-			return nil
+	/*handlerForDeployment := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, object client.Object) []reconcile.Request {
+	// List all Custom Resource
+	customResources := &webappv1.EvanList{}
+	if err := r.List(context.Background(), customResources); err != nil {
+		return nil
+	}
+	// This func return a Reconcile Request Array
+	var req []reconcile.Request
+	for _, c := range customResources.Items {
+		deploymentName := func() string {
+			return generateDeploymentName(c.Name, c.Spec.DeploymentConfig.Name, c.CreationTimestamp.Unix())
+		}()
+		// Find the deployment owned by the CR
+		if deploymentName == object.GetName() && c.Namespace == object.GetNamespace() {
+			deploy := &appsv1.Deployment{}
+			if err := r.Get(context.Background(), types.NamespacedName{
+				Namespace: object.GetNamespace(),
+				Name:      object.GetName(),
+			}, deploy); err != nil {
+				// This case can happen if somehow deployment gets deleted by
+				// Kubectl command. We need to append new reconcile request to array
+				// to create desired number of deployment again.
+				if errors.IsNotFound(err) {
+					req = append(req, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Namespace: c.Namespace,
+							Name:      c.Name,
+						},
+					})
+					continue
+				} else {
+					return nil
+				}
+			}
+			// Only append to the reconcile request array if replica count miss match.
+			if deploy.Spec.Replicas != c.Spec.DeploymentConfig.Replicas {
+				req = append(req, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Namespace: c.Namespace,
+						Name:      c.Name,
+					},
+				})
+			}
 		}
-		// This func return a Reconcile Request Array
+	}
+	*/
+	//return req
 
-		return req
-	}) */
 	fmt.Println("SetupWithManager Successful.")
 
 	return ctrl.NewControllerManagedBy(mgr).
