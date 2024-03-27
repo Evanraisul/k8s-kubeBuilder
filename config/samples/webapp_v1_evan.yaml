@@ -17,4 +17,4 @@ spec:
   serviceConfig:
     type: NodePort
     port: 4444
-  deletionPolicy: Delete
+  deletionPolicy: WipeOut

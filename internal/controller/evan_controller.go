@@ -19,20 +19,19 @@ package controller
 import (
 	"context"
 	"fmt"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"strconv"
-
-	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	webappv1 "my.domain.com/k8s-kubeBuilder/api/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	webappv1 "my.domain.com/k8s-kubeBuilder/api/v1"
+	"strconv"
 )
 
 // EvanReconciler reconciles a Evan object
@@ -70,23 +69,26 @@ func generateServiceName(evanName string, evanServiceName string, resourceCreati
 	return serviceName
 }
 
-func isDeploymentConfigChanged(evanReplicas int32, evanDeploymentName string, evanDeploymentImage string, currentDeployment *appsv1.Deployment) bool {
+func isDeploymentConfigChanged(evanReplicas int32, evanDeploymentName string, evanDeploymentImage string, deletionPolicy webappv1.DeletionPolicy, currentDeployment *appsv1.Deployment) bool {
 	if evanReplicas != 0 && evanReplicas != *currentDeployment.Spec.Replicas {
 		*currentDeployment.Spec.Replicas = evanReplicas
+		//fmt.Println("1")
 		return true
 	}
 	if evanDeploymentName != "" && evanDeploymentName != currentDeployment.Name {
 		currentDeployment.Name = evanDeploymentName
+		//fmt.Println("2")
 		return true
 	}
 	if evanDeploymentImage != "" && evanDeploymentImage != currentDeployment.Spec.Template.Spec.Containers[0].Image {
 		currentDeployment.Spec.Template.Spec.Containers[0].Image = evanDeploymentImage
+		//fmt.Println("3")
 		return true
 	}
 	return false
 }
 
-func isServiceConfigChanged(evanServiceName string, evanServicePort int32, currentService *corev1.Service) bool {
+func isServiceConfigChanged(evanServiceName string, evanServicePort int32, deletionPolicy webappv1.DeletionPolicy, currentService *corev1.Service) bool {
 	if evanServiceName != "" && evanServiceName != currentService.Name {
 		currentService.Name = evanServiceName
 		return true
@@ -96,6 +98,31 @@ func isServiceConfigChanged(evanServiceName string, evanServicePort int32, curre
 		return true
 	}
 	return false
+}
+func (r *EvanReconciler) deleteExternalResources(ctx context.Context, evan webappv1.Evan, deployment appsv1.Deployment, service corev1.Service) error {
+
+	if evan.Spec.DeletionPolicy == "WipeOut" {
+		err := r.Client.Delete(ctx, &deployment)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				fmt.Printf("Deployment not found")
+				return nil
+			}
+			return err
+		}
+		fmt.Printf("Deployment deleted")
+		//--------------------------------------------------
+		err = r.Client.Delete(ctx, &service)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				fmt.Printf("Service not found")
+				return nil
+			}
+			return err
+		}
+		fmt.Printf("Service deleted")
+	}
+	return nil
 }
 
 func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -112,6 +139,9 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// as the middle argument (most don't have a middle argument, as we'll see
 	// below).
 	var evan webappv1.Evan
+	var deploymentInstance appsv1.Deployment
+	var serviceInstance corev1.Service
+
 	if err := r.Get(ctx, req.NamespacedName, &evan); err != nil {
 		log.Log.Info("Unable to get Evan")
 		// we'll ignore not-found errors, since they can't be fixed by an immediate requeue
@@ -119,39 +149,68 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// name of our custom finalizer
+	myFinalizer := "Evan"
+	// examine DeletionTimestamp to determine if object is under deletion
+	if evan.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// to registering our finalizer.
+		if !controllerutil.ContainsFinalizer(&evan, myFinalizer) {
+			controllerutil.AddFinalizer(&evan, myFinalizer)
+			if err := r.Update(ctx, &evan); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(&evan, myFinalizer) {
+			// our finalizer is present, so lets handle any external dependency
+			if err := r.deleteExternalResources(ctx, evan, deploymentInstance, serviceInstance); err != nil {
+				// if fail to delete the external dependency here, return with error
+				// so that it can be retried.
+				return ctrl.Result{}, err
+			}
+			// remove our finalizer from the list and update it.
+			controllerutil.RemoveFinalizer(&evan, myFinalizer)
+			if err := r.Update(ctx, &evan, client.UpdateOption(client.DryRunAll)); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
+	}
+
 	// Get Resource CreationTimestamp
 	resourceCreationTimestamp := evan.CreationTimestamp.Unix()
 	// Deployment Name
 	deploymentName := generateDeploymentName(evan.Name, evan.Spec.DeploymentConfig.Name, resourceCreationTimestamp)
-	// If DeletionPolicy is WipeOut, add owner reference
-	updateDeployment := newDeployment(&evan, deploymentName)
-	if evan.Spec.DeletionPolicy == "WipeOut" {
-		updateDeployment.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
-			*metav1.NewControllerRef(&evan, webappv1.GroupVersion.WithKind("Evan")),
-		}
-	} else {
-		updateDeployment.ObjectMeta.OwnerReferences = nil
-	}
+	// Get the deployment with the name specified in Evan.spec
 
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: deploymentName}, updateDeployment); err != nil {
+	//fmt.Println("Evan1")
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: deploymentName}, &deploymentInstance); err != nil {
 		if errors.IsNotFound(err) {
 			log.Log.Info("Could not find existing deployment")
-			if err := r.Client.Create(ctx, updateDeployment); err != nil {
+			deploymentInstance = *newDeployment(&evan, deploymentName)
+			if err := r.Client.Create(ctx, &deploymentInstance); err != nil {
 				log.Log.Info("Error while creating deployment")
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
 			log.Log.Info("Deployment Created")
 		}
 		//log.Log.Error(err, "Error fetching deployment")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		//return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	//fmt.Println("Evan2")
 
 	// If deployment config changed, then update the Deployment.
+	deletionPolicy := evan.Spec.DeletionPolicy
 	replicas := evan.Spec.DeploymentConfig.Replicas
 	image := evan.Spec.DeploymentConfig.Image
-	if isDeploymentConfigChanged(*replicas, deploymentName, image, updateDeployment) {
-		log.Log.Info("Deployment Replica mis-match... Updating")
-		if err := r.Client.Update(ctx, updateDeployment); err != nil {
+
+	if isDeploymentConfigChanged(*replicas, deploymentName, image, deletionPolicy, &deploymentInstance) {
+		log.Log.Info("Deployment Config changed... Updating")
+		if err := r.Client.Update(ctx, &deploymentInstance); err != nil {
 			log.Log.Info("Error Updating Deployment")
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
@@ -160,7 +219,6 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Service Name
 	serviceName := generateServiceName(evan.Name, evan.Spec.ServiceConfig.Name, resourceCreationTimestamp)
-
 	// Get the service port
 	servicePort := evan.Spec.ServiceConfig.Port
 	if servicePort == 0 {
@@ -168,41 +226,33 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		err := fmt.Errorf("Service Port is not provided by user")
 		return ctrl.Result{}, err
 	}
-
+	//fmt.Println("Evan3")
 	// If TargetPort is not defined by User, set the TargetPort as same as Port
-	serviceTargetPort := evan.Spec.ServiceConfig.TargetPort
-	if evan.Spec.ServiceConfig.TargetPort == 0 {
-		serviceTargetPort = servicePort
-	}
+	//if evan.Spec.ServiceConfig.TargetPort == 0 {
+	//	serviceInstance.Spec.Ports[0].TargetPort = intstr.FromInt32(servicePort)
+	//}
 
-	// If deletion Policy is WipeOut, then set the owner Reference
-	updateService := newService(&evan, serviceName, serviceTargetPort)
-	if evan.Spec.DeletionPolicy == "WipeOut" {
-		updateService.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
-			*metav1.NewControllerRef(&evan, webappv1.GroupVersion.WithKind("Evan")),
-		}
-	} else {
-		updateService.ObjectMeta.OwnerReferences = nil
-	}
-	fmt.Println("Evan")
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: serviceName}, updateService); err != nil {
+	//fmt.Println("Evan4")
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: evan.Namespace, Name: serviceName}, &serviceInstance); err != nil {
 		if errors.IsNotFound(err) {
 			log.Log.Info("Could not find existing Service")
-			if err := r.Client.Create(ctx, updateService); err != nil {
+			serviceInstance = *newService(&evan, serviceName, servicePort)
+
+			if err := r.Client.Create(ctx, &serviceInstance); err != nil {
 				log.Log.Error(err, "Error while creating Service")
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
 			log.Log.Info("Service Created")
 		}
 		//		log.Log.Error(err, "Error fetching Service")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		//return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	fmt.Println("Evan..")
+	//fmt.Println("Evan5..")
 
 	// If ServiceConfig changes, update the service
-	if isServiceConfigChanged(serviceName, servicePort, updateService) {
+	if isServiceConfigChanged(serviceName, servicePort, deletionPolicy, &serviceInstance) {
 		log.Log.Info("Service Config changed... Updating")
-		if err := r.Client.Update(ctx, updateService); err != nil {
+		if err := r.Client.Update(ctx, &serviceInstance); err != nil {
 			log.Log.Error(err, "Error Updating Service")
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
@@ -210,7 +260,7 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	// Update the Status of the Evan
-	err := r.updateevan(ctx, &evan, updateDeployment)
+	err := r.updateevan(ctx, &evan, &deploymentInstance)
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -351,6 +401,9 @@ func newDeployment(Evan *webappv1.Evan, deploymentName string) *appsv1.Deploymen
 
 	deployment.ObjectMeta.Name = deploymentName
 	deployment.ObjectMeta.Namespace = Evan.ObjectMeta.Namespace
+	deployment.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(Evan, webappv1.GroupVersion.WithKind("Evan")),
+	}
 
 	deployment.Spec.Replicas = Evan.Spec.DeploymentConfig.Replicas
 	deployment.Spec.Selector = &metav1.LabelSelector{
@@ -393,6 +446,9 @@ func newService(Evan *webappv1.Evan, serviceName string, serviceTargetPort int32
 	service.ObjectMeta = metav1.ObjectMeta{
 		Name:      serviceName,
 		Namespace: Evan.ObjectMeta.Namespace,
+	}
+	service.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(Evan, webappv1.GroupVersion.WithKind("Evan")),
 	}
 
 	service.Spec = corev1.ServiceSpec{
