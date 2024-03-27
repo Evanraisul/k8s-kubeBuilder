@@ -100,28 +100,25 @@ func isServiceConfigChanged(evanServiceName string, evanServicePort int32, delet
 	return false
 }
 func (r *EvanReconciler) deleteExternalResources(ctx context.Context, evan webappv1.Evan, deployment appsv1.Deployment, service corev1.Service) error {
-
-	if evan.Spec.DeletionPolicy == "WipeOut" {
-		err := r.Client.Delete(ctx, &deployment)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				fmt.Printf("Deployment not found")
-				return nil
-			}
-			return err
+	err := r.Client.Delete(ctx, &deployment)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			fmt.Println("Deployment not found")
+			return nil
 		}
-		fmt.Printf("Deployment deleted")
-		//--------------------------------------------------
-		err = r.Client.Delete(ctx, &service)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				fmt.Printf("Service not found")
-				return nil
-			}
-			return err
-		}
-		fmt.Printf("Service deleted")
+		//return err
 	}
+	fmt.Println("Deployment deleted")
+	//--------------------------------------------------
+	err = r.Client.Delete(ctx, &service)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			fmt.Println("Service not found")
+			return nil
+		}
+		//return err
+	}
+	fmt.Println("Service deleted")
 	return nil
 }
 
@@ -148,35 +145,52 @@ func (r *EvanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		// (Need to wait for a new notification), and we can get them on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	fmt.Println("1")
 
 	// name of our custom finalizer
 	myFinalizer := "Evan"
 	// examine DeletionTimestamp to determine if object is under deletion
 	if evan.ObjectMeta.DeletionTimestamp.IsZero() {
+		fmt.Println("2")
 		// The object is not being deleted, so if it does not have our finalizer,
 		// then lets add the finalizer and update the object. This is equivalent
 		// to registering our finalizer.
 		if !controllerutil.ContainsFinalizer(&evan, myFinalizer) {
+			fmt.Println("3")
 			controllerutil.AddFinalizer(&evan, myFinalizer)
-			if err := r.Update(ctx, &evan); err != nil {
+			fmt.Println("4")
+			if err := r.Client.Update(ctx, &evan); err != nil {
 				return ctrl.Result{}, err
 			}
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// The object is being deleted
+		fmt.Println("2")
 		if controllerutil.ContainsFinalizer(&evan, myFinalizer) {
+			fmt.Println("3")
 			// our finalizer is present, so lets handle any external dependency
-			if err := r.deleteExternalResources(ctx, evan, deploymentInstance, serviceInstance); err != nil {
-				// if fail to delete the external dependency here, return with error
-				// so that it can be retried.
+			if evan.Spec.DeletionPolicy == "WipeOut" {
+				if err := r.deleteExternalResources(ctx, evan, deploymentInstance, serviceInstance); err != nil {
+					fmt.Println("4")
+					// if fail to delete the external dependency here, return with error
+					// so that it can be retried.
+					return ctrl.Result{}, err
+				}
+				fmt.Println("5")
+				// remove our finalizer from the list and update it.
+				controllerutil.RemoveFinalizer(&evan, myFinalizer)
+				fmt.Println("6")
+				fmt.Println("8")
+				return ctrl.Result{}, nil
+			}
+			if err := r.Client.Update(ctx, &evan); err != nil {
+				fmt.Println("7")
 				return ctrl.Result{}, err
 			}
-			// remove our finalizer from the list and update it.
-			controllerutil.RemoveFinalizer(&evan, myFinalizer)
-			if err := r.Update(ctx, &evan, client.UpdateOption(client.DryRunAll)); err != nil {
-				return ctrl.Result{}, err
-			}
+			return ctrl.Result{}, nil
 		}
+		fmt.Println("9")
 		// Stop reconciliation as the item is being deleted
 		return ctrl.Result{}, nil
 	}
